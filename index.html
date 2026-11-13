@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<title>ring</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: #000; overflow: hidden;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #stage { position: fixed; inset: 0; background: #000; }
+  @media (min-aspect-ratio: 4/5) {
+    #stage {
+      inset: auto; left: 50%; top: 50%;
+      width: min(480px, 94vw); height: min(980px, 96vh);
+      transform: translate(-50%, -50%);
+      border-radius: 28px; overflow: hidden;
+      box-shadow: 0 30px 90px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.06);
+    }
+  }
+  canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
+  .hud {
+    position: absolute; z-index: 2; pointer-events: none;
+    font-family: "Cascadia Mono", Consolas, "Sarasa Mono", ui-monospace, monospace;
+    letter-spacing: 0;
+  }
+  #time {
+    top: calc(env(safe-area-inset-top, 0px) + 18px); right: 22px;
+    color: #ff6d9a; font-size: 14px;
+  }
+  #time i {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #ff6d9a; margin-right: 8px; transform: translateY(-1px);
+  }
+  #stats {
+    left: 20px; top: 69%; color: #a8a8b0; font-size: 13px; line-height: 1.55;
+  }
+  #stats .who { color: #5c5c66; }
+  #prompt {
+    left: 20px; right: 20px; top: 78.5%;
+    color: #d6d6dc; font-size: 14px;
+    border-bottom: 1px solid rgba(255,255,255,.09);
+    padding-bottom: 7px;
+  }
+  #prompt .fps { float: right; color: #5c5c66; font-size: 13px; padding-top: 2px; }
+  #code {
+    left: 0; right: 0; top: 82.5%; bottom: 0;
+    padding: 6px 8px 10px; overflow: hidden;
+    font-size: 12px; line-height: 1.38;
+  }
+  .row { white-space: pre; height: 1.38em; }
+  .row.on { background: #1c1014; }
+  .ln { display: inline-block; width: 2.6em; color: #585266; text-align: right; margin-right: .8em; }
+  .k { color: #e06c8a; } .n { color: #d7a45c; } .b { color: #79b0c6; }
+  .s { color: #8fba86; } .p { color: #c6c6cc; }
+  .cur {
+    display: inline-block; width: .55em; height: .92em;
+    background: #ff6d9a; transform: translateY(2px);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="time" class="hud"><i></i><span>t 00.00s</span></div>
+  <div id="stats" class="hud">
+    <div class="who">@jin_22ee&nbsp;&nbsp;·&nbsp;&nbsp;2026</div>
+    <div>rotation <span id="rot">000.00</span>°</div>
+    <div>glints <span id="glints">0</span></div>
+    <div>letters <span id="letters">0,000</span></div>
+  </div>
+  <div id="prompt" class="hud">$ py art.py<span class="fps">running · 30 fps</span></div>
+  <div id="code" class="hud"></div>
+</div>
+
+<script type="text/plain" id="py">import numpy as np
+
+TAU = 2 * np.pi
+
+# the ring stands upright. y is up, z comes toward the camera.
+R_BAND = 1.00
+TUBE = 0.092
+GIRDLE_R = 0.34
+GIRDLE_Y = 1.36
+TABLE_R = 0.175
+TABLE_Y = 1.60
+CULET_Y = 1.18
+
+BAND, PRONG, GEM = 0, 1, 2
+DRAW = (0.30, 5.60)   # the sweep runs slowly over the whole ring
+TURN = 12.0           # one full turn, in seconds, once the drawing is done
+
+
+def band():
+    """a comfort-fit shank: a tube bent into a circle."""
+    u = np.linspace(0, TAU, 380, endpoint=False)
+    v = np.linspace(0, TAU, 32, endpoint=False)
+    uu, vv = np.meshgrid(u, v, indexing="ij")
+    spine = np.stack((R_BAND * np.cos(uu), R_BAND * np.sin(uu), np.zeros_like(uu)), axis=-1)
+    radial = np.stack((np.cos(uu), np.sin(uu), np.zeros_like(uu)), axis=-1)
+    side = np.array([0.0, 0.0, 1.0])
+    n = np.cos(vv)[..., None] * radial + np.sin(vv)[..., None] * side
+    return (spine + TUBE * n).reshape(-1, 3), n.reshape(-1, 3)
+
+
+def diamond():
+    """57 facets, each with its own flat normal (that is what makes it sparkle)"""
+    P, N, F = [], [], []
+    k = 0
+
+    def facet(corners, n):
+        nonlocal k
+        u, v = [x.ravel() for x in np.meshgrid(np.linspace(0, 1, 16), np.linspace(0, 1, 16))]
+        keep = u + v <= 1
+        a, b, c = corners
+        pts = a + (b - a) * u[keep, None] + (c - a) * v[keep, None]
+        nn = n / np.linalg.norm(n)
+        P.append(pts), N.append(np.tile(nn, (len(pts), 1))), F.append(np.full(len(pts), k))
+        k += 1
+
+    m = 16
+    for i in range(m):
+        a0, a1 = TAU * i / m, TAU * (i + 1) / m
+        g0 = np.array([GIRDLE_R * np.cos(a0), GIRDLE_Y, GIRDLE_R * np.sin(a0)])
+        g1 = np.array([GIRDLE_R * np.cos(a1), GIRDLE_Y, GIRDLE_R * np.sin(a1)])
+        t0 = np.array([TABLE_R * np.cos(a0), TABLE_Y, TABLE_R * np.sin(a0)])
+        t1 = np.array([TABLE_R * np.cos(a1), TABLE_Y, TABLE_R * np.sin(a1)])
+        culet = np.array([0.0, CULET_Y, 0.0])
+        crown = np.cross(g1 - g0, t0 - g0)
+        crown *= np.sign(crown[1]) or 1
+        facet((g0, g1, t0), crown)
+        facet((g1, t1, t0), crown * [1, 1.15, 1])
+        pav = np.cross(culet - g0, g1 - g0)
+        pav *= -np.sign(pav[1]) or 1
+        facet((g0, g1, culet), pav)
+        facet((np.array([0.0, TABLE_Y, 0.0]), t0, t1), np.array([0.0, 1.0, 0.0]))
+    return np.concatenate(P), np.concatenate(N), np.concatenate(F)
+
+
+def prongs():
+    P, N = [], []
+    for i in range(4):
+        a = TAU * (i + 0.5) / 4
+        base = np.array([0.08 * np.cos(a), R_BAND + 0.02, 0.08 * np.sin(a)])
+        tip = np.array([(GIRDLE_R + 0.015) * np.cos(a), TABLE_Y - 0.03, (GIRDLE_R + 0.015) * np.sin(a)])
+        u, phi = [x.ravel() for x in np.meshgrid(np.linspace(0, 1, 36), np.linspace(0, TAU, 11))]
+        d = (tip - base) / np.linalg.norm(tip - base)
+        s = np.cross(d, [0.0, 0.0, 1.0]); s /= np.linalg.norm(s)
+        w = np.cross(s, d)
+        n = np.cos(phi)[:, None] * s + np.sin(phi)[:, None] * w
+        P.append(base + u[:, None] * (tip - base) + n * 0.020), N.append(n)
+    return np.concatenate(P), np.concatenate(N)
+
+
+BAND_P, BAND_N = band()
+GEM_P, GEM_N, GEM_F = diamond()
+PRONG_P, PRONG_N = prongs()
+RING_P = np.concatenate([BAND_P, PRONG_P, GEM_P])
+RING_N = np.concatenate([BAND_N, PRONG_N, GEM_N])
+RING_KIND = np.concatenate([
+    np.full(len(BAND_P), BAND), np.full(len(PRONG_P), PRONG), np.full(len(GEM_P), GEM)
+])
+FACET = np.concatenate([
+    np.full(len(BAND_P), -1), np.full(len(PRONG_P), -1), GEM_F
+])
+SEED = np.random.default_rng(1).random((len(RING_P), 3))
+
+
+def lights(t):
+    """a key light, a moving rim light, and a sparkle light"""
+    key = np.array([0.0, 0.80, 0.60])
+    rim = np.array([np.cos(t * 0.9), 0.50, np.sin(t * 0.9)])
+    spark = np.array([np.sin(t * 1.7), 0.25, np.cos(t * 1.3)])
+    return key / np.linalg.norm(key), rim / np.linalg.norm(rim), spark / np.linalg.norm(spark)
+
+
+def spin(t):
+    return TAU * max(t - DRAW[1] - 0.6, 0) / TURN  # starts after the drawing
+
+
+def rot_y(p, a):
+    c, s = np.cos(a), np.sin(a)
+    return np.stack((c * p[:, 0] + s * p[:, 2], p[:, 1], -s * p[:, 0] + c * p[:, 2]), axis=1)
+
+
+def draw_order():
+    """when each point appears: the band draws itself from the bottom up,
+    then the prongs rise, then the diamond fills in from its tip"""
+    p = RING_P
+    up_band = np.abs(np.angle(np.exp(1j * (np.arctan2(p[:, 1], p[:, 0]) + np.pi / 2)))) / np.pi
+    prong = 1.0 + (p[:, 1] - R_BAND) / (TABLE_Y - R_BAND) * 0.25
+    gem = 1.25 + (p[:, 1] - CULET_Y) / (TABLE_Y - CULET_Y) * 0.45
+    return np.select([RING_KIND == BAND, RING_KIND == PRONG], [up_band, prong], gem)
+
+
+ORDER = draw_order()
+
+
+def smooth(x):
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def gather(t):
+    """sweep: points appear where the drawing light has passed"""
+    head = (t - DRAW[0]) / (DRAW[1] - DRAW[0]) * float(ORDER.max())
+    k = smooth((head - ORDER) / 0.055)
+    return k, np.exp(-np.abs(head - ORDER) / 0.030)
+</script>
+
+<script>
+const TAU = Math.PI * 2;
+const R_BAND = 1, TUBE = 0.092, GIRDLE_R = 0.34, GIRDLE_Y = 1.36;
+const TABLE_R = 0.175, TABLE_Y = 1.60, CULET_Y = 1.18;
+const DRAW0 = 0.30, DRAW1 = 5.60, TURN = 12;
+
+const srcEl = document.getElementById("py");
+const SOURCE = srcEl.textContent.replace(/^\n/, "").replace(/\s*$/, "\n");
+const LINES = SOURCE.split("\n");
+const srcElGone = srcEl; srcElGone.remove();
+
+let rng = 1;
+function rand() { rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0; return rng / 4294967296; }
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const cross = (a, b) => [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
+
+const px = [], py = [], pz = [], nx = [], ny = [], nz = [], kind = [], facet = [];
+function push(p, n, knd, f) {
+  px.push(p[0]); py.push(p[1]); pz.push(p[2]);
+  const nn = norm(n);
+  nx.push(nn[0]); ny.push(nn[1]); nz.push(nn[2]);
+  kind.push(knd); facet.push(f);
+}
+(function band() {
+  const nu = 300, nv = 26;
+  for (let i = 0; i < nu; i++) {
+    const u = TAU * i / nu, cu = Math.cos(u), su = Math.sin(u);
+    for (let j = 0; j < nv; j++) {
+      const v = TAU * j / nv, cv = Math.cos(v), sv = Math.sin(v);
+      const n = [cu * cv, su * cv, sv];
+      push([R_BAND * cu + TUBE * n[0], R_BAND * su + TUBE * n[1], TUBE * n[2]], n, 0, -1);
+    }
+  }
+})();
+(function diamond() {
+  let k = 0;
+  const g = 14;
+  function facet(a, b, c, n) {
+    const nn = norm(n);
+    for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
+      const u = i / (g - 1), v = j / (g - 1);
+      if (u + v > 1) continue;
+      const w = 1 - u - v;
+      push([a[0]*w + b[0]*u + c[0]*v, a[1]*w + b[1]*u + c[1]*v, a[2]*w + b[2]*u + c[2]*v], nn, 2, k);
+    }
+    k++;
+  }
+  const m = 16;
+  for (let i = 0; i < m; i++) {
+    const a0 = TAU * i / m, a1 = TAU * (i + 1) / m;
+    const g0 = [GIRDLE_R * Math.cos(a0), GIRDLE_Y, GIRDLE_R * Math.sin(a0)];
+    const g1 = [GIRDLE_R * Math.cos(a1), GIRDLE_Y, GIRDLE_R * Math.sin(a1)];
+    const t0 = [TABLE_R * Math.cos(a0), TABLE_Y, TABLE_R * Math.sin(a0)];
+    const t1 = [TABLE_R * Math.cos(a1), TABLE_Y, TABLE_R * Math.sin(a1)];
+    const culet = [0, CULET_Y, 0];
+    let crown = cross(sub(g1, g0), sub(t0, g0));
+    crown = mul(crown, Math.sign(crown[1]) || 1);
+    facet(g0, g1, t0, crown);
+    facet(g1, t1, t0, [crown[0], crown[1] * 1.15, crown[2]]);
+    let pav = cross(sub(culet, g0), sub(g1, g0));
+    pav = mul(pav, -(Math.sign(pav[1]) || 1));
+    facet(g0, g1, culet, pav);
+    facet([0, TABLE_Y, 0], t0, t1, [0, 1, 0]);
+  }
+})();
+(function prongs() {
+  for (let i = 0; i < 4; i++) {
+    const a = TAU * (i + 0.5) / 4;
+    const base = [0.08 * Math.cos(a), R_BAND + 0.02, 0.08 * Math.sin(a)];
+    const tip = [(GIRDLE_R + 0.015) * Math.cos(a), TABLE_Y - 0.03, (GIRDLE_R + 0.015) * Math.sin(a)];
+    const d = norm(sub(tip, base));
+    const s = norm(cross(d, [0, 0, 1]));
+    const w = cross(s, d);
+    for (let u = 0; u < 32; u++) for (let p = 0; p < 10; p++) {
+      const uu = u / 31, phi = TAU * p / 10;
+      const n = [Math.cos(phi) * s[0] + Math.sin(phi) * w[0], Math.cos(phi) * s[1] + Math.sin(phi) * w[1], Math.cos(phi) * s[2] + Math.sin(phi) * w[2]];
+      const o = add(add(base, mul(sub(tip, base), uu)), mul(n, 0.020));
+      push(o, n, 1, -1);
+    }
+  }
+})();
+
+const N = px.length;
+const PX = Float32Array.from(px), PY = Float32Array.from(py), PZ = Float32Array.from(pz);
+const NX = Float32Array.from(nx), NY = Float32Array.from(ny), NZ = Float32Array.from(nz);
+const KIND = Uint8Array.from(kind), FACET = Int16Array.from(facet);
+const JX = new Float32Array(N), JY = new Float32Array(N), JZ = new Float32Array(N);
+const ORDER = new Float32Array(N);
+let ORDER_MAX = 0;
+for (let i = 0; i < N; i++) {
+  JX[i] = (rand() - 0.5) * 0.012; JY[i] = (rand() - 0.5) * 0.012; JZ[i] = (rand() - 0.5) * 0.012;
+  let o;
+  if (KIND[i] === 0) {
+    const a = Math.atan2(Math.sin(Math.atan2(PY[i], PX[i]) + Math.PI / 2), Math.cos(Math.atan2(PY[i], PX[i]) + Math.PI / 2));
+    o = Math.abs(a) / Math.PI;
+  } else if (KIND[i] === 1) o = 1 + (PY[i] - R_BAND) / (TABLE_Y - R_BAND) * 0.25;
+  else o = 1.25 + (PY[i] - CULET_Y) / (TABLE_Y - CULET_Y) * 0.45;
+  ORDER[i] = o; if (o > ORDER_MAX) ORDER_MAX = o;
+}
+const LETTERS = "AIDA";
+const LID = new Uint8Array(N);
+for (let i = 0; i < N; i++) LID[i] = i % 4;
+const DUST = Array.from({ length: 90 }, () => [rand(), rand(), rand()]);
+
+const stage = document.getElementById("stage");
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d", { alpha: false });
+let CW = 7, CH = 11, COLS = 60, ROWS = 80;
+let cells, lum, glow;
+const fScore = new Float32Array(80), fBest = new Float32Array(80);
+const fX = new Int16Array(80), fY = new Int16Array(80), fCnt = new Int16Array(80), fLid = new Uint8Array(80);
+
+function resize() {
+  const w = stage.clientWidth || innerWidth, h = stage.clientHeight || innerHeight;
+  canvas.width = Math.max(320, Math.round(Math.min(w, 560)));
+  canvas.height = Math.max(560, Math.round(h));
+  CW = Math.max(6, Math.round(canvas.width / 72));
+  CH = Math.max(9, Math.round(CW * 1.55));
+  COLS = Math.floor(canvas.width / CW);
+  ROWS = Math.floor(canvas.height / CH);
+  cells = new Int16Array(ROWS * COLS);
+  lum = new Float32Array(ROWS * COLS);
+  glow = new Float32Array(ROWS * COLS);
+  ctx.font = `${Math.max(9, CW + 2)}px Consolas, "Cascadia Mono", monospace`;
+  ctx.textBaseline = "top";
+}
+addEventListener("resize", resize);
+resize();
+
+function stamp(col, row, score, lid) {
+  if (col < 0 || row < 0 || col >= COLS || row >= ROWS) return;
+  const i = row * COLS + col;
+  if (score >= lum[i]) { lum[i] = score; cells[i] = lid; }
+}
+
+function starLetters(x, y, s, lid0) {
+  const arm = (3 + 4 * Math.min(s, 2.2)) | 0;
+  if (x < arm * CW || y < arm * CH || x >= canvas.width - arm * CW || y >= canvas.height - arm * CH) return;
+  for (let i = -arm; i <= arm; i++) {
+    const fade = Math.max(0.35, 1 - Math.abs(i) / (arm + 0.01));
+    const v = (255 * fade) | 0;
+    ctx.fillStyle = `rgb(${v},${(v * 0.98) | 0},${v})`;
+    const ch = LETTERS[(lid0 + Math.abs(i)) % 4];
+    ctx.fillText(ch, x + i * CW, y);
+    ctx.fillText(ch, x, y + i * CH);
+    if (Math.abs(i) <= arm * 0.7) {
+      ctx.fillText(ch, x + i * CW, y + i * CH);
+      ctx.fillText(ch, x - i * CW, y + i * CH);
+    }
+  }
+}
+
+function frame(t) {
+  cells.fill(-1); lum.fill(-1); fScore.fill(0); fBest.fill(0); fCnt.fill(0);
+  const ang = TAU * Math.max(t - DRAW1 - 0.6, 0) / TURN;
+  const c = Math.cos(ang), s = Math.sin(ang);
+  const head = (t - DRAW0) / (DRAW1 - DRAW0) * ORDER_MAX;
+  const kl = Math.hypot(0, 0.8, 0.6), ky = 0.8 / kl, kz = 0.6 / kl;
+  let rx = Math.cos(t * 0.9), ry = 0.5, rz = Math.sin(t * 0.9); const rl = Math.hypot(rx, ry, rz); rx /= rl; ry /= rl; rz /= rl;
+  let sx = Math.sin(t * 1.7), sy = 0.25, sz = Math.cos(t * 1.3); const sl = Math.hypot(sx, sy, sz); sx /= sl; sy /= sl; sz /= sl;
+  const scale = canvas.width * 0.355, cx = canvas.width * 0.5, cy = canvas.height * 0.37;
+  const floor = -R_BAND - TUBE - 0.08;
+  const W = canvas.width, H = canvas.height;
+  for (let i = 0; i < N; i++) {
+    const x = PX[i] + JX[i], y = PY[i] + JY[i], z = PZ[i] + JZ[i];
+    const xr = c * x + s * z, zr = -s * x + c * z;
+    const n0 = NX[i], n1 = NY[i], n2 = NZ[i];
+    const nrx = c * n0 + s * n2, nry = n1, nrz = -s * n0 + c * n2;
+    const ndk = Math.max(0, nry * ky + nrz * kz);
+    const ndr = Math.max(0, nrx * rx + nry * ry + nrz * rz);
+    const nds = Math.max(0, nrx * sx + nry * sy + nrz * sz);
+    let u = (head - ORDER[i]) / 0.055; if (u < 0) u = 0; else if (u > 1) u = 1;
+    const k = u * u * (3 - 2 * u);
+    const edge = Math.exp(-Math.abs(head - ORDER[i]) / 0.030);
+    if (k === 0 && edge < 0.02) continue;
+    const depth = 0.55 + 0.45 * (zr + 1.2) / 2.4;
+    let shade, spec = 0;
+    if (KIND[i] === 2) {
+      spec = nds ** 40;
+      shade = (0.08 + 0.35 * ndk ** 5 + 4.2 * spec + 2.4 * ndk ** 22) * k + edge * 2.4;
+    } else {
+      shade = (0.28 + 0.95 * ndk ** 1.15 + 0.70 * ndr ** 3.2) * (KIND[i] === 1 ? 1.15 : 1);
+      shade = shade * k + edge * 1.3;
+    }
+    shade *= depth;
+    const sx0 = (cx + xr * scale + 0.5) | 0;
+    const sy0 = (cy - y * scale + 0.5) | 0;
+    stamp((sx0 / CW) | 0, (sy0 / CH) | 0, shade + 0.35 * zr, LID[i]);
+    if (KIND[i] === 2 && k > 0.4) {
+      const f = FACET[i];
+      fScore[f] += spec * k; fCnt[f]++;
+      if (spec * k >= fBest[f]) { fBest[f] = spec * k; fX[f] = sx0; fY[f] = sy0; fLid[f] = LID[i]; }
+    }
+    const gap = y - floor;
+    const fade = (1 - gap / 1.7) * 0.22 * shade;
+    if (fade > 0.04) {
+      const ry0 = (cy - (floor - gap) * scale + 0.5) | 0;
+      if (ry0 < H * 0.66) stamp((sx0 / CW) | 0, (ry0 / CH) | 0, fade, LID[i]);
+    }
+  }
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  glow.set(lum);
+  for (let r = 1; r < ROWS - 1; r++) {
+    const row = r * COLS;
+    for (let c = 1; c < COLS - 1; c++) {
+      const v = lum[row + c];
+      if (v < 0.08) continue;
+      glow[row + c - 1] += v * 0.35; glow[row + c + 1] += v * 0.35;
+      glow[row - COLS + c] += v * 0.35; glow[row + COLS + c] += v * 0.35;
+    }
+  }
+  let letters = 0;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const i = r * COLS + c;
+      const g = glow[i];
+      if (g > 0.08) {
+        const tone = 1 - Math.exp(-g * 0.55);
+        const v = (18 + 55 * tone) | 0;
+        ctx.fillStyle = `rgb(${v},${v},${(v * 1.05) | 0})`;
+        ctx.fillRect(c * CW, r * CH, CW, CH);
+      }
+      const lid = cells[i];
+      if (lid < 0) continue;
+      const tone = 1 - Math.exp(-Math.max(lum[i], 0) * 0.75);
+      if (tone < 0.08) continue;
+      const v = (90 + 165 * tone) | 0;
+      ctx.fillStyle = `rgb(${v},${(v * 0.98) | 0},${Math.min(255, (v * 1.05) | 0)})`;
+      ctx.fillText(LETTERS[lid], c * CW + 1, r * CH - 1);
+      letters++;
+    }
+  }
+
+  const hot = [];
+  for (let f = 0; f < 80; f++) if (fCnt[f] && fScore[f] / fCnt[f] > 0.22) hot.push(f);
+  hot.sort((a, b) => fScore[b] / fCnt[b] - fScore[a] / fCnt[a]);
+  for (const f of hot.slice(0, 5)) starLetters(fX[f], fY[f], 0.8 + 2.2 * (fScore[f] / fCnt[f]), fLid[f]);
+
+  for (let i = 0; i < DUST.length; i++) {
+    const d = DUST[i];
+    const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 1.8 + d[0] * 40));
+    if (tw < 0.45) continue;
+    const v = (55 + 70 * tw) | 0;
+    ctx.fillStyle = `rgb(${v},${v},${(v * 1.05) | 0})`;
+    ctx.fillText(LETTERS[i % 4], (d[0] * (W - 40) + 20) | 0, (d[1] * (H * 0.68) + 12) | 0);
+  }
+  return hot.length * 17 + (letters >> 3);
+}
+
+const KW = new Set(["def", "for", "in", "return", "nonlocal", "import", "from", "as"]);
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+const STRING_LINE = (() => {
+  const on = [];
+  let cur = false;
+  for (let i = 0; i < LINES.length; i++) {
+    const n = (LINES[i].match(/"""/g) || []).length;
+    const entered = cur;
+    if (n % 2) cur = !cur;
+    on[i] = entered || n > 0;
+  }
+  return on;
+})();
+function color(line, idx) {
+  if (STRING_LINE[idx] || /^\s*#/.test(line)) return `<span class="s">${esc(line)}</span>`;
+  let html = "", i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === "#") { html += `<span class="s">${esc(line.slice(i))}</span>`; break; }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1; while (j < line.length && line[j] !== ch) j++; j = Math.min(line.length, j + 1);
+      html += `<span class="s">${esc(line.slice(i, j))}</span>`; i = j; continue;
+    }
+    if (ch >= "0" && ch <= "9" || (ch === "." && line[i + 1] >= "0" && line[i + 1] <= "9")) {
+      let j = i + 1; while (j < line.length && (line[j] >= "0" && line[j] <= "9" || line[j] === ".")) j++;
+      html += `<span class="n">${esc(line.slice(i, j))}</span>`; i = j; continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i + 1; while (j < line.length && /[A-Za-z0-9_]/.test(line[j])) j++;
+      const w = line.slice(i, j);
+      const cls = KW.has(w) ? "k" : (w === "np" ? "b" : "p");
+      html += `<span class="${cls}">${esc(w)}</span>`; i = j; continue;
+    }
+    html += `<span class="p">${esc(ch)}</span>`; i++;
+  }
+  return html;
+}
+const codeEl = document.getElementById("code");
+let lastShown = -1;
+function lettersOf(t) {
+  const n = SOURCE.length, done = 8.4;
+  if (t >= done) return n;
+  const u = Math.max(t, 0) / done;
+  return Math.floor(n * (1 - (1 - u) ** 0.72));
+}
+function fmtLetters(n) { const s = String(n).padStart(4, "0"); return s.slice(0, -3) + "," + s.slice(-3); }
+function showCode(t) {
+  const shown = lettersOf(t);
+  if (shown === lastShown) return;
+  lastShown = shown;
+  const text = SOURCE.slice(0, shown);
+  const parts = text.split("\n");
+  let current, col;
+  if (text.endsWith("\n")) { current = parts.length - 2; col = (parts[current] || "").length; parts.pop(); }
+  else { current = parts.length - 1; col = parts[current].length; }
+  current = Math.max(0, current);
+  const start = Math.max(0, current - 7);
+  let html = "";
+  for (let row = start; row < Math.min(LINES.length, start + 9); row++) {
+    const raw = row < parts.length ? parts[row] : (row === current ? "" : null);
+    if (raw === null) break;
+    const on = row === current;
+    let body = color(raw, row);
+    if (on) body = color(raw.slice(0, col), row) + `<span class="cur"></span>` + color(raw.slice(col), row);
+    html += `<div class="row${on ? " on" : ""}"><span class="ln">${row + 1}</span>${body}</div>`;
+  }
+  codeEl.innerHTML = html;
+  document.getElementById("letters").textContent = fmtLetters(shown);
+}
+
+const timeEl = document.querySelector("#time span");
+const rotEl = document.getElementById("rot");
+const glintEl = document.getElementById("glints");
+let t0 = performance.now();
+const params = new URLSearchParams(location.search);
+const pinned = params.has("t") ? parseFloat(params.get("t")) : null;
+function loop(now) {
+  const t = pinned === null ? ((now - t0) / 1000) % 24 : pinned;
+  const g = frame(t);
+  const deg = ((t - DRAW1 - 0.6) > 0 ? ((t - DRAW1 - 0.6) / TURN) * 360 : 0) % 360;
+  timeEl.textContent = "t " + t.toFixed(2).padStart(5, "0") + "s";
+  rotEl.textContent = deg.toFixed(2).padStart(6, "0");
+  glintEl.textContent = String(g);
+  showCode(t);
+  if (pinned === null) requestAnimationFrame(loop);
+}
+addEventListener("pointerdown", () => { if (pinned === null) { t0 = performance.now(); lastShown = -1; } });
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
